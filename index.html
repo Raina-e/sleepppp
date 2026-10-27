@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>블랙아웃 플레이어</title>
+<style>
+  /* Single dark world by choice: true black so OLED pixels stay off. */
+  :root{
+    --black:#000;
+    --dim:#5d6470;
+    --text:#a9b0bb;
+    --line:#1c1f24;
+    --glow:#d9a441;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--black);color:var(--text);
+    font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
+    -webkit-tap-highlight-color:transparent;overflow:hidden}
+
+  /* Start screen */
+  #start{position:fixed;inset:0;display:flex;flex-direction:column;gap:18px;
+    padding:max(24px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+    overflow-y:auto;z-index:5;background:var(--black)}
+  #start h1{margin:0;font-size:20px;font-weight:600;color:#e6e9ee;letter-spacing:-.01em}
+  #start p{margin:0;font-size:14px;line-height:1.6;color:var(--dim);max-width:60ch}
+  #frame{width:100%;max-width:640px;aspect-ratio:16/9;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#0a0b0d}
+  #frame iframe{width:100%;height:100%;display:block}
+  .row{display:flex;gap:8px;flex-wrap:wrap;max-width:640px}
+  button{font:inherit;cursor:pointer;border-radius:999px;border:1px solid var(--line);background:#0d0e11;color:var(--text);padding:12px 18px;font-size:15px}
+  button.main{background:var(--glow);border-color:var(--glow);color:#1a1205;font-weight:600}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--glow);outline-offset:2px}
+  input{font:inherit;font-size:14px;flex:1;min-width:0;background:#0a0b0d;color:var(--text);border:1px solid var(--line);border-radius:999px;padding:11px 16px}
+  #msg{font-size:13px;color:var(--glow);min-height:1.2em}
+
+  /* Black mode: the iframe keeps playing underneath an opaque black sheet */
+  body.black #frame{position:fixed;inset:0;max-width:none;width:100vw;height:100vh;aspect-ratio:auto;border:0;border-radius:0;z-index:1}
+  body.black #start > :not(#frame){display:none}
+  #sheet{position:fixed;inset:0;background:var(--black);z-index:10;display:none;cursor:none}
+  body.black #sheet{display:block}
+  #hud{position:absolute;left:50%;bottom:max(40px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    display:flex;flex-direction:column;align-items:center;gap:14px;opacity:0;transition:opacity .4s;pointer-events:none;
+    width:min(320px,calc(100vw - 32px));text-align:center}
+  #hud.on{opacity:1;pointer-events:auto;cursor:default}
+  #time{font-variant-numeric:tabular-nums;font-size:13px;color:var(--dim);letter-spacing:.04em}
+  #bar{width:100%;height:2px;background:var(--line);border-radius:2px;overflow:hidden}
+  #fill{height:100%;width:0;background:var(--glow);opacity:.6}
+  #hud .row{justify-content:center}
+  #hud button{padding:9px 16px;font-size:13px;background:transparent}
+  #note{font-size:12px;color:var(--dim)}
+  @media (prefers-reduced-motion:reduce){#hud{transition:none}}
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>블랙아웃 플레이어</h1>
+  <p>재생하면 화면이 완전히 검게 바뀌고, 그동안은 화면이 꺼지지 않게 붙잡아 둡니다. 영상이 끝나면 붙잡던 걸 놓아서 휴대폰의 자동 잠금 시간이 지나면 화면이 꺼집니다.</p>
+  <div id="frame"><div id="yt"></div></div>
+  <div class="row">
+    <button class="main" id="go">검은 화면으로 재생</button>
+  </div>
+  <div id="msg" role="status"></div>
+  <div class="row">
+    <input id="url" type="url" inputmode="url" placeholder="다른 유튜브 링크 붙여넣기" aria-label="유튜브 링크">
+    <button id="load">불러오기</button>
+  </div>
+  <p>재생 중 화면을 한 번 톡 치면 남은 시간과 일시정지 버튼이 잠깐 보입니다.</p>
+</div>
+
+<div id="sheet" aria-hidden="true">
+  <div id="hud">
+    <div id="time">0:00 / 0:00</div>
+    <div id="bar"><div id="fill"></div></div>
+    <div class="row">
+      <button id="pause">일시정지</button>
+      <button id="exit">나가기</button>
+    </div>
+    <div id="note"></div>
+  </div>
+</div>
+
+<script>
+const DEFAULT_ID = 'TAYZykSmQ8Q';
+const $ = id => document.getElementById(id);
+let player, ready = false, lock = null, blackMode = false, hudTimer = null, tick = null;
+
+function parseId(s){
+  if(!s) return null;
+  s = s.trim();
+  if(/^[\w-]{11}$/.test(s)) return s;
+  const m = s.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/embed\/|\/live\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+let videoId = parseId(new URLSearchParams(location.search).get('v')) || DEFAULT_ID;
+
+const fmt = s => { s = Math.max(0, Math.floor(s||0)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=String(s%60).padStart(2,'0');
+  return h ? `${h}:${String(m).padStart(2,'0')}:${x}` : `${m}:${x}`; };
+const say = t => { $('msg').textContent = t || ''; };
+
+/* --- Screen wake lock: hold while playing, release at the end --- */
+async function holdScreen(){
+  if(!('wakeLock' in navigator)){ $('note').textContent = '이 브라우저는 화면 유지 기능이 없어서, 자동 잠금이 되면 재생이 멈출 수 있어요.'; return; }
+  try{ lock = await navigator.wakeLock.request('screen'); lock.addEventListener('release', ()=>{ lock = null; }); }
+  catch(e){ $('note').textContent = '화면 유지 요청이 거절됐어요. 자동 잠금 시간을 길게 해 두세요.'; }
+}
+function letGo(){ if(lock){ lock.release().catch(()=>{}); lock = null; } }
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && blackMode && player && player.getPlayerState() === 1 && !lock) holdScreen();
+});
+
+/* --- Black mode --- */
+function enterBlack(fromTap){
+  if(blackMode) return;
+  blackMode = true;
+  document.body.classList.add('black');
+  holdScreen();
+  if(fromTap){ const el = document.documentElement; (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); }
+  clearInterval(tick); tick = setInterval(updateHud, 1000);
+}
+function leaveBlack(){
+  blackMode = false;
+  document.body.classList.remove('black');
+  $('hud').classList.remove('on');
+  clearInterval(tick);
+  letGo();
+  if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+}
+function updateHud(){
+  if(!player || !ready) return;
+  const c = player.getCurrentTime(), d = player.getDuration();
+  $('time').textContent = `${fmt(c)} / ${fmt(d)}`;
+  $('fill').style.width = d ? (c/d*100)+'%' : '0';
+  $('pause').textContent = player.getPlayerState() === 1 ? '일시정지' : '재생';
+}
+function flashHud(){
+  updateHud();
+  $('hud').classList.add('on');
+  clearTimeout(hudTimer);
+  hudTimer = setTimeout(()=> $('hud').classList.remove('on'), 4000);
+}
+$('sheet').addEventListener('click', e => { if(e.target.closest('button')) return; flashHud(); });
+$('pause').addEventListener('click', ()=>{
+  if(player.getPlayerState() === 1){ player.pauseVideo(); } else { player.playVideo(); holdScreen(); }
+  flashHud();
+});
+$('exit').addEventListener('click', ()=>{ player.pauseVideo(); leaveBlack(); });
+
+/* --- When the video ends: go fully dark and stop holding the screen --- */
+function onEnded(){
+  clearInterval(tick);
+  letGo();
+  if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+  $('hud').classList.remove('on');
+  // stay black; the phone's own auto-lock now turns the screen off
+}
+
+/* --- YouTube player --- */
+function onYouTubeIframeAPIReady(){
+  player = new YT.Player('yt', {
+    videoId,
+    playerVars:{ playsinline:1, rel:0, modestbranding:1 },
+    events:{
+      onReady(){ ready = true; say(''); },
+      onStateChange(e){
+        if(e.data === YT.PlayerState.PLAYING){ enterBlack(false); if(!lock && blackMode) holdScreen(); }
+        if(e.data === YT.PlayerState.ENDED){ onEnded(); }
+      },
+      onError(e){
+        leaveBlack();
+        const c = e.data;
+        if(c === 101 || c === 150) say('이 영상은 올린 사람이 다른 사이트 재생을 막아 뒀어요.');
+        else if(c === 153) say('파일로 바로 열면 유튜브가 재생을 막아요. 웹 주소로 올린 뒤 열어 주세요.');
+        else if(c === 100) say('영상을 찾을 수 없어요. 링크를 확인해 주세요.');
+        else say('재생 오류가 났어요 (코드 ' + c + ').');
+      }
+    }
+  });
+}
+$('go').addEventListener('click', ()=>{
+  if(!ready){ say('플레이어를 불러오는 중이에요. 잠시 후 다시 눌러 주세요.'); return; }
+  enterBlack(true);
+  player.playVideo();
+  // iOS sometimes ignores play from outside the video; fall back to the video's own button
+  setTimeout(()=>{ if(blackMode && player.getPlayerState() !== 1 && player.getPlayerState() !== 3){
+    leaveBlack(); say('재생이 시작되지 않았어요. 위 영상의 재생 버튼을 직접 누르면 바로 검은 화면이 됩니다.'); } }, 2500);
+});
+$('load').addEventListener('click', ()=>{
+  const id = parseId($('url').value);
+  if(!id){ say('유튜브 링크를 인식하지 못했어요.'); return; }
+  videoId = id; say('');
+  if(ready) player.cueVideoById(id);
+  try{ history.replaceState(null, '', '?v=' + id); }catch(e){}
+});
+
+const s = document.createElement('script');
+s.src = 'https://www.youtube.com/iframe_api';
+s.onerror = () => say('유튜브 플레이어를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.');
+document.head.appendChild(s);
+</script>
+</body>
+</html>
