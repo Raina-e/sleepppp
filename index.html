@@ -52,6 +52,19 @@
   #hud button{padding:9px 16px;font-size:13px;background:transparent}
   #note{font-size:12px;color:var(--dim)}
   @media (prefers-reduced-motion:reduce){#hud{transition:none}}
+
+  /* Watch mode (?mode=watch): only the video shows, everything around it is black */
+  body.watch #start{justify-content:center;align-items:center;padding:0;gap:0}
+  body.watch #start > :not(#frame){display:none}
+  body.watch #frame{max-width:none;width:min(100vw,calc(100vh * 16 / 9));border:0;border-radius:0;background:#000}
+  #wbar{position:fixed;left:0;right:0;bottom:0;z-index:6;display:none;justify-content:center;gap:8px;
+    padding:12px max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+    transition:opacity .4s}
+  body.watch:not(.black) #wbar{display:flex}
+  #wbar.off{opacity:0;pointer-events:none}
+  #wbar button{padding:9px 16px;font-size:13px;background:transparent}
+  #wmsg{position:fixed;top:max(16px,env(safe-area-inset-top));left:16px;right:16px;z-index:6;text-align:center;font-size:13px;color:var(--glow)}
+  @media (prefers-reduced-motion:reduce){#wbar{transition:none}}
 </style>
 </head>
 <body>
@@ -70,6 +83,12 @@
   </div>
   <p>재생 중 화면을 한 번 톡 치면 남은 시간과 일시정지 버튼이 잠깐 보입니다.</p>
 </div>
+
+<div id="wbar">
+  <button id="wback">← 목록으로</button>
+  <button id="wblack">화면까지 검게</button>
+</div>
+<div id="wmsg" role="status"></div>
 
 <div id="sheet" aria-hidden="true">
   <div id="hud">
@@ -99,7 +118,10 @@ let videoId = parseId(new URLSearchParams(location.search).get('v')) || DEFAULT_
 
 const fmt = s => { s = Math.max(0, Math.floor(s||0)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=String(s%60).padStart(2,'0');
   return h ? `${h}:${String(m).padStart(2,'0')}:${x}` : `${m}:${x}`; };
-const say = t => { $('msg').textContent = t || ''; };
+// Default view: only the video shows on black; the button blacks out the video too
+const watchMode = true;
+document.body.classList.add('watch');
+const say = t => { $('msg').textContent = t || ''; if(watchMode) $('wmsg').textContent = t || ''; };
 
 /* --- Screen wake lock: hold while playing, release at the end --- */
 async function holdScreen(){
@@ -162,10 +184,16 @@ function onEnded(){
 function onYouTubeIframeAPIReady(){
   player = new YT.Player('yt', {
     videoId,
-    playerVars:{ playsinline:1, rel:0, modestbranding:1 },
+    playerVars:{ playsinline:1, rel:0, modestbranding:1, autoplay: watchMode ? 1 : 0 },
     events:{
       onReady(){ ready = true; say(''); },
       onStateChange(e){
+        if(watchMode){
+          if(e.data === YT.PlayerState.PLAYING){ if(!lock) holdScreen(); hideBar(); }
+          else if(!blackMode) showBar(false);
+          if(e.data === YT.PlayerState.ENDED){ if(blackMode) onEnded(); else letGo(); showBar(false); }
+          return;
+        }
         if(e.data === YT.PlayerState.PLAYING){ enterBlack(false); if(!lock && blackMode) holdScreen(); }
         if(e.data === YT.PlayerState.ENDED){ onEnded(); }
       },
@@ -195,6 +223,28 @@ $('load').addEventListener('click', ()=>{
   if(ready) player.cueVideoById(id);
   try{ history.replaceState(null, '', '?v=' + id); }catch(e){}
 });
+
+/* --- Watch mode controls: fade away while playing, come back on a tap outside the video --- */
+let barTimer = null;
+function showBar(autoHide){ $('wbar').classList.remove('off'); clearTimeout(barTimer);
+  if(autoHide) barTimer = setTimeout(hideBar, 3500); }
+function hideBar(){ clearTimeout(barTimer); barTimer = setTimeout(()=> $('wbar').classList.add('off'), 1500); }
+if(watchMode){
+  $('start').addEventListener('click', e => { if(e.target.closest('#frame')) return;
+    showBar(player && ready && player.getPlayerState() === 1); });
+  if(history.length <= 1) $('wback').hidden = true;
+  $('wback').addEventListener('click', ()=>{
+    letGo();
+    if(history.length > 1) history.back(); else window.close();
+  });
+  $('wblack').addEventListener('click', ()=>{
+    if(!ready) return;
+    enterBlack(true);
+    if(player.getPlayerState() !== 1) player.playVideo();
+  });
+  // leaving black mode inside watch mode returns to the video view, still playing
+  $('exit').addEventListener('click', e => { e.stopImmediatePropagation(); leaveBlack(); showBar(false); }, true);
+}
 
 const s = document.createElement('script');
 s.src = 'https://www.youtube.com/iframe_api';
