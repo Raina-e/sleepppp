@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#000000">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>블랙아웃 플레이어</title>
 <style>
@@ -182,9 +183,18 @@ function onEnded(){
 
 /* --- YouTube player --- */
 function onYouTubeIframeAPIReady(){
-  player = new YT.Player('yt', {
-    videoId,
-    playerVars:{ playsinline:1, rel:0, modestbranding:1, autoplay: watchMode ? 1 : 0 },
+  // Build the iframe ourselves so Safari always sends this page's address to YouTube (missing it causes error 153)
+  const ifr = document.createElement('iframe');
+  ifr.id = 'yt';
+  ifr.title = '유튜브 영상';
+  ifr.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  ifr.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+  ifr.setAttribute('allowfullscreen', '');
+  const q = new URLSearchParams({ enablejsapi:'1', playsinline:'1', rel:'0', autoplay: watchMode ? '1' : '0',
+    origin: location.origin, widget_referrer: location.href });
+  ifr.src = 'https://www.youtube.com/embed/' + videoId + '?' + q;
+  $('yt').replaceWith(ifr);
+  player = new YT.Player(ifr, {
     events:{
       onReady(){ ready = true; say(''); },
       onStateChange(e){
@@ -201,7 +211,7 @@ function onYouTubeIframeAPIReady(){
         leaveBlack();
         const c = e.data;
         if(c === 101 || c === 150) say('이 영상은 올린 사람이 다른 사이트 재생을 막아 뒀어요.');
-        else if(c === 153) say('파일로 바로 열면 유튜브가 재생을 막아요. 웹 주소로 올린 뒤 열어 주세요.');
+        else if(c === 153) say('유튜브가 이 페이지 주소를 확인하지 못했어요 (오류 153). 새로고침해 보고, 계속되면 Safari 설정 > 고급에서 \'고급 추적 및 지문 채취 방지\'를 끄거나 유튜브에서 열어 주세요.');
         else if(c === 100) say('영상을 찾을 수 없어요. 링크를 확인해 주세요.');
         else say('재생 오류가 났어요 (코드 ' + c + ').');
       }
